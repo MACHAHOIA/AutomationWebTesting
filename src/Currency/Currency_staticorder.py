@@ -61,11 +61,11 @@ width, height = image.size
 # 你可以根据实际图片像素手动调整以下crop参数
 # 假设表格1在左侧，表格2在右侧，去除顶部约120px，底部约80px
 # 左表格区域
-left_table = image.crop((95, 110, 630, height-53))
+left_table = image.crop((95, 110, 505, height-53))
 left_table_path = os.path.join(img_dir, 'crazybird_rate_left.jpg')
 left_table.save(left_table_path)
 # 右表格区域
-right_table = image.crop((723 , 110, 1260, height-53))
+right_table = image.crop((723 , 110, 1130, height-53))
 right_table_path = os.path.join(img_dir, 'crazybird_rate_right.jpg')
 right_table.save(right_table_path)
 
@@ -106,17 +106,19 @@ CURRENCY_WHITELIST = {
 }
 
 def parse_table_lines_by_order(ocr_text, whitelist_order):
-    lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+    # 提取所有数字
+    nums = re.findall(r'\d+\.\d+|\d+', ocr_text)
+    # 只保留合理范围的数字（如0.01~200，且长度不为1或3位整数）
+    nums = [n for n in nums if 0.01 <= float(n) <= 200 and not (len(n) == 1 or (len(n) == 3 and n.isdigit() and int(n) > 100))]
+    print('最终用于配对的数字:', nums)
+    # 只保留前2*币种数个数字
+    max_needed = len(whitelist_order) * 2
+    nums = nums[:max_needed]
     table = []
-    idx = 0
-    for line in lines:
-        nums = re.findall(r'[\d\.]+', line)
-        if len(nums) >= 2 and idx < len(whitelist_order):
-            buy, sell = nums[:2]
-            note_part = line.split(nums[1], 1)[-1].strip() if len(nums) > 1 else ''
-            currency_en = whitelist_order[idx]
-            table.append([currency_en, buy, sell, note_part])
-            idx += 1
+    for idx, currency_en in enumerate(whitelist_order):
+        buy = nums[2*idx] if 2*idx < len(nums) else ''
+        sell = nums[2*idx+1] if 2*idx+1 < len(nums) else ''
+        table.append([currency_en, buy, sell])
     return table
 
 # 左表币种顺序
@@ -128,9 +130,24 @@ table_left = parse_table_lines_by_order(ocr_text_left, left_order)
 table_right = parse_table_lines_by_order(ocr_text_right, right_order)
 table = table_left + table_right
 
-header = ["币种(英文)", "本店买入/We Buy", "本店卖出/We Sell", "备注/Notes"]
+header = ["币种(英文)", "本店买入/We Buy", "本店卖出/We Sell"]
 df = pd.DataFrame(table, columns=header)
 print(df)
+
+# 自动修正RUB和ZAR的买入/卖出错位
+if 'RUB' in df['币种(英文)'].values and 'ZAR' in df['币种(英文)'].values:
+    rub_idx = df.index[df['币种(英文)'] == 'RUB'][0]
+    zar_idx = df.index[df['币种(英文)'] == 'ZAR'][0]
+    # 如果RUB买入<ZAR买入，且ZAR买入<1，说明顺序错了，交换
+    try:
+        rub_buy = float(df.at[rub_idx, '本店买入/We Buy'])
+        zar_buy = float(df.at[zar_idx, '本店买入/We Buy'])
+        if rub_buy < zar_buy and zar_buy < 1:
+            # 交换RUB和ZAR的买入/卖出
+            df.at[rub_idx, '本店买入/We Buy'], df.at[zar_idx, '本店买入/We Buy'] = df.at[zar_idx, '本店买入/We Buy'], df.at[rub_idx, '本店买入/We Buy']
+            df.at[rub_idx, '本店卖出/We Sell'], df.at[zar_idx, '本店卖出/We Sell'] = df.at[zar_idx, '本店卖出/We Sell'], df.at[rub_idx, '本店卖出/We Sell']
+    except Exception as e:
+        print('自动修正RUB/ZAR时出错:', e)
 
 # 导出为Excel和CSV，文件名带当前日期
 now_str = datetime.now().strftime('%Y%m%d')
